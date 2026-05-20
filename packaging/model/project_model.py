@@ -370,10 +370,22 @@ class ProjectModel:
             return
 
         # Dev mode: create a classic .venv
+        # Note: --copies is NOT used here. On macOS, venv --copies copies the Python
+        # executable but NOT libpython3.12.dylib, causing "Library not loaded" at runtime.
+        # Using symlinks instead: the python symlink resolves to the original binary,
+        # and @executable_path/../lib/libpython3.12.dylib resolves correctly from there.
         venv_path = os.path.join(project_dir, ".venv")
         if on_status:
             on_status("Creating project virtual environment...")
-        _run_hidden([sys.executable, "-m", "venv", "--copies", venv_path], timeout=600)
+        _run_hidden([sys.executable, "-m", "venv", venv_path], timeout=600)
+
+        # Bootstrap pip into the venv using the host Python (avoids ensurepip issues).
+        venv_lib = os.path.join(venv_path, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+        _run_hidden(
+            [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
+             "--target", venv_lib, "pip"],
+            timeout=300,
+        )
 
     def _install_infernux_in_runtime(self, project_dir: str, engine_version: str = "", *, on_status=None):
         """Install the Infernux wheel into the project's Python environment.

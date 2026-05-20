@@ -304,6 +304,49 @@ def _ensure_pip(python_exe: str) -> None:
     if completed.returncode == 0:
         return
 
+    # ensurepip can fail with SIGABRT on copied Python binaries on macOS.
+    # Try a fallback: copy pip from the original venv that we know works.
+    import shutil as _shutil, os as _os, sys as _sys, subprocess as _subprocess
+    original_python = _sys.executable
+    if original_python and _os.path.dirname(original_python) != _os.path.dirname(python_exe):
+        import site as _site
+        orig_site_packages = next(
+            (p for p in _site.getsitepackages() if _os.path.isdir(p) and "site-packages" in p), None
+        )
+        target_site_packages = next(
+            (p for p in _site.getsitepackages() if _os.path.isdir(p) and "site-packages" in p), None
+        ) if False else None
+        # Try to find target site-packages via python path
+        try:
+            result = _subprocess.run(
+                [python_exe, "-c", "import site; print(site.getsitepackages()[0])"],
+                capture_output=True, text=True, timeout=10
+            )
+            target_site_packages = result.stdout.strip() if result.returncode == 0 else None
+        except Exception:
+            target_site_packages = None
+
+        if orig_site_packages and target_site_packages:
+            pip_src = _os.path.join(orig_site_packages, "pip")
+            if _os.path.isdir(pip_src):
+                pip_dest = _os.path.join(target_site_packages, "pip")
+                try:
+                    _shutil.rmtree(pip_dest, ignore_errors=True)
+                    _shutil.copytree(pip_src, pip_dest)
+                    # Also copy wheel & certifi dependencies if present
+                    for dep in ("wheel", "certifi", "distlib"):
+                        dep_src = _os.path.join(orig_site_packages, dep)
+                        if _os.path.isdir(dep_src):
+                            _shutil.rmtree(_os.path.join(target_site_packages, dep), ignore_errors=True)
+                            _shutil.copytree(dep_src, _os.path.join(target_site_packages, dep))
+                    # Verify it works now
+                    verify = _subprocess.run([python_exe, "-m", "pip", "--version"], capture_output=True, timeout=30)
+                    if verify.returncode == 0:
+                        return
+                except Exception:
+                    pass
+
+    # Last resort: try ensurepip normally
     completed = _run([python_exe, "-m", "ensurepip", "--upgrade"], timeout=600)
     if completed.returncode != 0:
         raise SystemExit(
